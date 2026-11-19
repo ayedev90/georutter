@@ -1,0 +1,7 @@
+# GeoRutter
+Geospatial data sources by country, with access methods and caveats.
+
+Index: https://georutter.org/v1/index.json
+Topics: https://georutter.org/v1/topics.json
+Cards: /v1/{territory}/{topic}.json
+Details: /v1/{territory}/{topic}/detail.json
