@@ -3,18 +3,23 @@ const trackedPath = /^\/v1\/(?:index\.json|topics\.json|countries\/[a-z0-9-]+\.j
 const knownClient = /\b(ChatGPT-User|Claude-User|Claude-Agent|OAI-SearchBot|Claude-SearchBot|GPTBot|ClaudeBot|Googlebot|Bingbot|Applebot|Perplexity-User|PerplexityBot)\b/i;
 
 function recordRead(request, response, dataset) {
-  if (!dataset || request.method !== "GET" || response.status !== 200) return;
+  if (request.method !== "GET" || response.status !== 200) return "skipped";
 
   const url = new URL(request.url);
   const userAgent = request.headers.get("User-Agent") ?? "";
   if (url.hostname !== "georutter.org" || !trackedPath.test(url.pathname)
-      || userAgent.startsWith("GeoRutter-Deploy-Check")) return;
+      || userAgent.startsWith("GeoRutter-Deploy-Check")) return "skipped";
 
-  const client = userAgent.match(knownClient)?.[1].toLowerCase() ?? "unknown";
+  if (!dataset) return "binding-missing";
+  const client = userAgent === "GeoRutter-Metrics-Smoke"
+    ? "smoke-test"
+    : userAgent.match(knownClient)?.[1].toLowerCase() ?? "unknown";
   try {
     dataset.writeDataPoint({ indexes: [url.pathname], blobs: [url.pathname, client] });
+    return "submitted";
   } catch {
     // Metrics must not interrupt API responses.
+    return "write-failed";
   }
 }
 
@@ -22,7 +27,13 @@ export default {
   async fetch(request, env) {
     const asset = await env.ASSETS.fetch(request);
     if (asset.status !== 404) {
-      recordRead(request, asset, env.GEORUTTER_ANALYTICS);
+      const analytics = recordRead(request, asset, env.GEORUTTER_ANALYTICS);
+      if (request.headers.get("User-Agent") === "GeoRutter-Metrics-Smoke") {
+        const response = new Response(asset.body, asset);
+        response.headers.set("X-GeoRutter-Analytics", analytics);
+        response.headers.set("Cache-Control", "no-store");
+        return response;
+      }
       return asset;
     }
 
