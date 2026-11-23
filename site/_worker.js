@@ -2,9 +2,21 @@ const requestGuide = "https://github.com/ayedev90/georutter/issues/new?title=Req
 const trackedPath = /^\/v1\/(?:index\.json|topics\.json|countries\/[a-z0-9-]+\.json|[a-z0-9-]+\/[a-z0-9-]+(?:\/detail)?\.json)$/;
 const guidePath = /^\/[a-z0-9-]+\/[a-z0-9-]+\/$/;
 const knownClient = /\b(ChatGPT-User|Claude-User|Claude-Agent|OAI-SearchBot|Claude-SearchBot|GPTBot|ClaudeBot|Googlebot|Bingbot|Applebot|Perplexity-User|PerplexityBot)\b/i;
+const encoder = new TextEncoder();
 
-function recordRead(request, response, dataset) {
-  if (request.method !== "GET" || response.status !== 200) return "skipped";
+async function dailyClientId(request, secret) {
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (!ip || !secret) return "";
+  const day = new Date().toISOString().slice(0, 10);
+  const key = await crypto.subtle.importKey(
+    "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(day + "\n" + ip));
+  return Array.from(new Uint8Array(signature).slice(0, 16), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function recordRead(request, status, env) {
+  if (request.method !== "GET" || status !== 200) return "skipped";
 
   const url = new URL(request.url);
   const userAgent = request.headers.get("User-Agent") ?? "";
@@ -14,13 +26,26 @@ function recordRead(request, response, dataset) {
   const format = trackedPath.test(url.pathname) ? "json" : guidePath.test(url.pathname) ? "html" : null;
   if (!format) return "skipped";
 
-  if (!dataset) return "binding-missing";
+  if (!env.GEORUTTER_ANALYTICS) return "binding-missing";
   const client = userAgent === "GeoRutter-Metrics-Smoke"
     ? "smoke-test"
     : userAgent.match(knownClient)?.[1].toLowerCase() ?? "unknown";
+  const detectedCountry = request.cf?.country;
+  const country = typeof detectedCountry === "string" && /^[A-Z]{2}$/.test(detectedCountry)
+    ? detectedCountry
+    : "";
+  let clientId = "";
   try {
-    dataset.writeDataPoint({ indexes: [url.pathname], blobs: [url.pathname, client, format] });
-    return "submitted";
+    clientId = await dailyClientId(request, env.GEORUTTER_CLIENT_ID_SECRET);
+  } catch {
+    // Keep counting requests even if the pseudonym cannot be generated.
+  }
+  try {
+    env.GEORUTTER_ANALYTICS.writeDataPoint({
+      indexes: [url.pathname],
+      blobs: [url.pathname, client, format, country, clientId],
+    });
+    return clientId ? "submitted-with-client-id" : "submitted";
   } catch {
     // Metrics must not interrupt API responses.
     return "write-failed";
@@ -28,17 +53,18 @@ function recordRead(request, response, dataset) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const asset = await env.ASSETS.fetch(request);
     const path = new URL(request.url).pathname;
     if (asset.status !== 404 || !path.startsWith("/v1/")) {
-      const analytics = recordRead(request, asset, env.GEORUTTER_ANALYTICS);
+      const analytics = recordRead(request, asset.status, env);
       if (request.headers.get("User-Agent") === "GeoRutter-Metrics-Smoke") {
         const response = new Response(asset.body, asset);
-        response.headers.set("X-GeoRutter-Analytics", analytics);
+        response.headers.set("X-GeoRutter-Analytics", await analytics);
         response.headers.set("Cache-Control", "no-store");
         return response;
       }
+      ctx.waitUntil(analytics);
       return asset;
     }
 
