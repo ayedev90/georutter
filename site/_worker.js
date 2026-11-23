@@ -1,5 +1,6 @@
 const requestGuide = "https://github.com/ayedev90/georutter/issues/new?title=Request%20a%20source%20guide";
 const trackedPath = /^\/v1\/(?:index\.json|topics\.json|countries\/[a-z0-9-]+\.json|[a-z0-9-]+\/[a-z0-9-]+(?:\/detail)?\.json)$/;
+const guidePath = /^\/[a-z0-9-]+\/[a-z0-9-]+\/$/;
 const knownClient = /\b(ChatGPT-User|Claude-User|Claude-Agent|OAI-SearchBot|Claude-SearchBot|GPTBot|ClaudeBot|Googlebot|Bingbot|Applebot|Perplexity-User|PerplexityBot)\b/i;
 
 function recordRead(request, response, dataset) {
@@ -7,15 +8,18 @@ function recordRead(request, response, dataset) {
 
   const url = new URL(request.url);
   const userAgent = request.headers.get("User-Agent") ?? "";
-  if (url.hostname !== "georutter.org" || !trackedPath.test(url.pathname)
+  if (url.hostname !== "georutter.org"
       || userAgent.startsWith("GeoRutter-Deploy-Check")) return "skipped";
+
+  const format = trackedPath.test(url.pathname) ? "json" : guidePath.test(url.pathname) ? "html" : null;
+  if (!format) return "skipped";
 
   if (!dataset) return "binding-missing";
   const client = userAgent === "GeoRutter-Metrics-Smoke"
     ? "smoke-test"
     : userAgent.match(knownClient)?.[1].toLowerCase() ?? "unknown";
   try {
-    dataset.writeDataPoint({ indexes: [url.pathname], blobs: [url.pathname, client] });
+    dataset.writeDataPoint({ indexes: [url.pathname], blobs: [url.pathname, client, format] });
     return "submitted";
   } catch {
     // Metrics must not interrupt API responses.
@@ -26,7 +30,8 @@ function recordRead(request, response, dataset) {
 export default {
   async fetch(request, env) {
     const asset = await env.ASSETS.fetch(request);
-    if (asset.status !== 404) {
+    const path = new URL(request.url).pathname;
+    if (asset.status !== 404 || !path.startsWith("/v1/")) {
       const analytics = recordRead(request, asset, env.GEORUTTER_ANALYTICS);
       if (request.headers.get("User-Agent") === "GeoRutter-Metrics-Smoke") {
         const response = new Response(asset.body, asset);
@@ -37,7 +42,6 @@ export default {
       return asset;
     }
 
-    const path = new URL(request.url).pathname;
     const body = JSON.stringify({
       status: "not_researched",
       path,
