@@ -1,6 +1,7 @@
 const requestGuide = "https://github.com/ayedev90/georutter/issues/new?title=Request%20a%20source%20guide";
 const trackedPath = /^\/v1\/(?:index\.json|topics\.json|countries\/[a-z0-9-]+\.json|[a-z0-9-]+\/[a-z0-9-]+(?:\/detail)?\.json)$/;
-const guidePath = /^\/[a-z0-9-]+\/[a-z0-9-]+\/$/;
+const guidePath = /^\/[a-z0-9-]+\/[a-z0-9-]{4,}\/$/;
+const localizedPath = /^\/[a-z0-9-]+\/([a-z]{2,3})\/(?:([a-z0-9-]{4,})\/)?$/;
 const knownClient = /\b(ChatGPT-User|Claude-User|Claude-Agent|OAI-SearchBot|Claude-SearchBot|GPTBot|ClaudeBot|Googlebot|Bingbot|Applebot|Perplexity-User|PerplexityBot)\b/i;
 const encoder = new TextEncoder();
 
@@ -23,7 +24,8 @@ async function recordRead(request, status, env) {
   if (url.hostname !== "georutter.org"
       || userAgent.startsWith("GeoRutter-Deploy-Check")) return "skipped";
 
-  const format = trackedPath.test(url.pathname) ? "json" : guidePath.test(url.pathname) ? "html" : null;
+  const localized = url.pathname.match(localizedPath);
+  const format = trackedPath.test(url.pathname) ? "json" : (localized || guidePath.test(url.pathname)) ? "html" : null;
   if (!format) return "skipped";
 
   if (!env.GEORUTTER_ANALYTICS) return "binding-missing";
@@ -43,7 +45,8 @@ async function recordRead(request, status, env) {
   try {
     env.GEORUTTER_ANALYTICS.writeDataPoint({
       indexes: [url.pathname],
-      blobs: [url.pathname, client, format, country, clientId],
+      blobs: [url.pathname, client, format, country, clientId,
+        localized?.[1] ?? "en", localized && !localized[2] ? "index" : "record"],
     });
     return clientId ? "submitted-with-client-id" : "submitted";
   } catch {
